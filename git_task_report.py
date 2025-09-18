@@ -165,27 +165,35 @@ class GitTaskReportGenerator:
     def merge_commits_by_date(self, commits):
         """Merge commits that share the same date"""
         date_commits = defaultdict(list)
-
+        
+        # Group by date only (not by date AND repo)
         for commit in commits:
-            key = (commit['date'], commit['repo'])
-            date_commits[key].append(commit)
-
+            date_commits[commit['date']].append(commit)
+        
         merged_commits = []
-        for (commit_date, repo), commits_list in date_commits.items():
-            # Sort commits by time if available, otherwise by message
-            commits_list.sort(key=lambda x: x['message'])
-
-            # Merge messages with line breaks
-            merged_message = '\n'.join([c['message'] for c in commits_list])
-
+        for commit_date, commits_list in date_commits.items():
+            # Sort commits by repo name, then by message
+            commits_list.sort(key=lambda x: (x['repo'], x['message']))
+            
+            # Format each commit message with repo name and join with line breaks
+            formatted_messages = []
+            for commit in commits_list:
+                formatted_message = f"{commit['message']} ({commit['repo']})"
+                formatted_messages.append(formatted_message)
+            
+            # Join messages with line breaks (ensure proper line break character)
+            merged_message = '\n'.join(formatted_messages)
+            
             merged_commits.append({
                 'date': commit_date,
                 'message': merged_message,
-                'repo': repo,
+                'repo': 'combined' if len(set(c['repo'] for c in commits_list)) > 1 else commits_list[0]['repo'],
                 'commit_count': len(commits_list)
             })
-
+        
         return merged_commits
+
+
 
     def generate_task_rows(self, merged_commits):
         """Generate task management rows from merged commits"""
@@ -274,38 +282,59 @@ class GitTaskReportGenerator:
     def create_task_sheet(self, workbook, sheet_name, tasks):
         """Create a task sheet in the workbook"""
         ws = workbook.create_sheet(title=sheet_name)
-
+        
         # Define columns (excluding Repository and Commit Count for display)
         columns = ['Task Name', 'Task Priority', 'Assign Date', 'Due Date', 
-                  'Planned End Date', 'Actual End Date', 'Assignee']
-
+                'Planned End Date', 'Actual End Date', 'Assignee']
+        
         # Add headers
         for col, header in enumerate(columns, 1):
             cell = ws.cell(row=1, column=col, value=header)
             cell.font = Font(bold=True, color="FFFFFF")
             cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
             cell.alignment = Alignment(horizontal="center")
-
+        
         # Add data
         for row, task in enumerate(tasks, 2):
             for col, header in enumerate(columns, 1):
-                ws.cell(row=row, column=col, value=task[header])
-
+                cell = ws.cell(row=row, column=col, value=task[header])
+                
+                # Enable text wrapping for ALL Task Name cells
+                if header == 'Task Name':
+                    cell.alignment = Alignment(wrap_text=True, vertical='top')
+                    # Set row height based on content
+                    if task[header] and '\n' in str(task[header]):
+                        line_count = str(task[header]).count('\n') + 1
+                        ws.row_dimensions[row].height = max(line_count * 15, 30)
+        
         # Auto-adjust column widths
         for column in ws.columns:
             max_length = 0
             column_letter = column[0].column_letter
-
+            
             for cell in column:
                 try:
-                    cell_length = len(str(cell.value)) if cell.value else 0
-                    if cell_length > max_length:
-                        max_length = cell_length
+                    if cell.value:
+                        # For cells with line breaks, consider only the longest line
+                        if '\n' in str(cell.value):
+                            lines = str(cell.value).split('\n')
+                            cell_length = max(len(line) for line in lines)
+                        else:
+                            cell_length = len(str(cell.value))
+                        
+                        if cell_length > max_length:
+                            max_length = cell_length
                 except:
                     pass
-
-            adjusted_width = min(max_length + 2, 50)  # Cap at 50 characters
+            
+            # Set wider width for Task Name column
+            if column_letter == 'A':  # Task Name column
+                adjusted_width = min(max_length + 5, 80)
+            else:
+                adjusted_width = min(max_length + 2, 50)
+            
             ws.column_dimensions[column_letter].width = adjusted_width
+
 
     def create_summary_sheet(self, workbook, repo_stats):
         """Create summary sheet with repository statistics"""
