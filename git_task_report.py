@@ -33,15 +33,17 @@ class GitTaskReportGenerator:
         parser.add_argument('--until', help='End date (YYYY-MM-DD)')
         parser.add_argument('--filename', help='Output Excel filename')
         parser.add_argument('--separate-sheets', action='store_true', 
-                          help='Create separate sheet for each repository')
-
+                        help='Create separate sheet for each repository')
+        parser.add_argument('--exclude-keywords', nargs='+', help='Keywords to exclude from commit messages')
+        
         args = parser.parse_args()
-
+        
         # If no arguments provided, try to load from config file
         if not any(vars(args).values()):
             return self.load_config_file()
-
+        
         return args
+
 
     def load_config_file(self, config_path='git_task_config.json'):
         """Load configuration from JSON file"""
@@ -76,6 +78,7 @@ class GitTaskReportGenerator:
                     self.until = config.get('until', '')
                     self.filename = config.get('filename', '')
                     setattr(self, 'separate_sheets', config.get('separate_sheets', False))
+                    setattr(self, 'exclude_keywords', config.get('exclude_keywords', []))
 
             print(f"Loaded configuration from {config_path}")
             return ConfigArgs(config)
@@ -108,21 +111,21 @@ class GitTaskReportGenerator:
 
         return True
 
-    def get_git_commits(self, repo_path, author=None, since=None, until=None):
+    def get_git_commits(self, repo_path, author=None, since=None, until=None, exclude_keywords=None):
         """Extract git commits from repository"""
         try:
             # Build git log command
             cmd = ['git', 'log', '--pretty=format:%H|%an|%ad|%s', '--date=short']
-
+            
             if author:
                 cmd.extend(['--author', author])
-
+            
             if since:
                 cmd.extend(['--since', since.strftime('%Y-%m-%d')])
-
+            
             if until:
                 cmd.extend(['--until', until.strftime('%Y-%m-%d')])
-
+            
             # Execute git log command
             result = subprocess.run(
                 cmd, 
@@ -131,20 +134,26 @@ class GitTaskReportGenerator:
                 text=True,
                 check=True
             )
-
+            
             commits = []
+            exclude_keywords = exclude_keywords or []
+            
             for line in result.stdout.strip().split('\n'):
                 if not line:
                     continue
-
+                
                 parts = line.split('|', 3)
                 if len(parts) >= 4:
                     commit_hash, commit_author, commit_date, commit_message = parts
-
+                    
                     # Skip merge commits
                     if commit_message.startswith('Merge'):
                         continue
-
+                    
+                    # Skip commits containing excluded keywords
+                    if exclude_keywords and any(keyword.lower() in commit_message.lower() for keyword in exclude_keywords):
+                        continue
+                    
                     commits.append({
                         'hash': commit_hash,
                         'author': commit_author,
@@ -152,15 +161,16 @@ class GitTaskReportGenerator:
                         'message': commit_message.strip(),
                         'repo': os.path.basename(repo_path) if repo_path != './' else 'current'
                     })
-
+            
             return commits
-
+            
         except subprocess.CalledProcessError as e:
             print(f"Error executing git command in {repo_path}: {e}")
             return []
         except Exception as e:
             print(f"Error processing repository {repo_path}: {e}")
             return []
+
 
     def merge_commits_by_date(self, commits):
         """Merge commits that share the same date"""
@@ -292,20 +302,16 @@ class GitTaskReportGenerator:
             cell = ws.cell(row=1, column=col, value=header)
             cell.font = Font(bold=True, color="FFFFFF")
             cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-            cell.alignment = Alignment(horizontal="center")
+            cell.alignment = Alignment(horizontal="center",vertical='top')
         
         # Add data
         for row, task in enumerate(tasks, 2):
             for col, header in enumerate(columns, 1):
                 cell = ws.cell(row=row, column=col, value=task[header])
                 
-                # Enable text wrapping for ALL Task Name cells
+                # Enable text wrapping for Task Name column
                 if header == 'Task Name':
                     cell.alignment = Alignment(wrap_text=True, vertical='top')
-                    # Set row height based on content
-                    if task[header] and '\n' in str(task[header]):
-                        line_count = str(task[header]).count('\n') + 1
-                        ws.row_dimensions[row].height = max(line_count * 15, 30)
         
         # Auto-adjust column widths
         for column in ws.columns:
@@ -327,13 +333,14 @@ class GitTaskReportGenerator:
                 except:
                     pass
             
-            # Set wider width for Task Name column
+            # Set column width
             if column_letter == 'A':  # Task Name column
-                adjusted_width = min(max_length + 5, 80)
+                adjusted_width = min(max_length + 10, 120)
             else:
-                adjusted_width = min(max_length + 2, 50)
+                adjusted_width = min(max_length + 3, 50)
             
             ws.column_dimensions[column_letter].width = adjusted_width
+
 
 
     def create_summary_sheet(self, workbook, repo_stats):
@@ -416,7 +423,7 @@ class GitTaskReportGenerator:
             for i, repo in enumerate(valid_repos, 1):
                 print(f"[{i}/{len(valid_repos)}] Processing repository: {repo}")
 
-                commits = self.get_git_commits(repo, args.author, since_date, until_date)
+                commits = self.get_git_commits(repo, args.author, since_date, until_date, getattr(args, 'exclude_keywords', []))
                 all_commits.extend(commits)
 
                 print(f"  Found {len(commits)} commits")
